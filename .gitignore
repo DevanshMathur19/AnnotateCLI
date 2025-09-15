@@ -1,0 +1,10 @@
+# Claude Code files
+.claude/
+
+# Annotation files (generated during runtime)
+annotations.json
+
+# Test markdown files (but keep README.md)
+test-*.md
+deploy-*.md
+additional-*.md
