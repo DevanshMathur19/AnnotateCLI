@@ -5,13 +5,11 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
-
-	"github.com/google/uuid"
 )
 
 type ContextData struct {
-	StepID           string `json:"stepid"`
 	Timestamp        string `json:"timestamp"`
 	Style            string `json:"style"`
 	Summary          string `json:"summary"`
@@ -44,8 +42,12 @@ type CLI struct {
 }
 
 func NewCLI() *CLI {
+	outputPath := os.Getenv("HARNESS_ANNOTATIONS_FILE")
+	if outputPath == "" {
+		outputPath = "annotations.json"
+	}
 	return &CLI{
-		annotationsFile: "annotations.json",
+		annotationsFile: outputPath,
 	}
 }
 
@@ -79,11 +81,28 @@ func (c *CLI) saveAnnotations(store AnnotationStore) error {
 		return err
 	}
 
-	return os.WriteFile(c.annotationsFile, data, 0644)
-}
+	// Ensure parent directory exists
+	dir := filepath.Dir(c.annotationsFile)
+	if dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("failed to create parent dir: %w", err)
+		}
+	}
 
-func (c *CLI) generateStepID() string {
-	return uuid.New().String()[:8]
+	// Atomic write pattern: write to tmp and then rename to final
+	tmp := c.annotationsFile + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return fmt.Errorf("failed to write temp file: %w", err)
+	}
+	if err := os.Rename(tmp, c.annotationsFile); err != nil {
+		// On Windows, rename may fail if destination exists. Try removing and renaming again.
+		_ = os.Remove(c.annotationsFile)
+		if err2 := os.Rename(tmp, c.annotationsFile); err2 != nil {
+			_ = os.Remove(tmp)
+			return fmt.Errorf("failed to finalize write: %w", err2)
+		}
+	}
+	return nil
 }
 
 func (c *CLI) getExecutionContext() (ExecutionContext, string, string) {
@@ -122,14 +141,10 @@ func (c *CLI) readSummaryFile(filePath string) (string, error) {
 	return string(data), nil
 }
 
-func (c *CLI) annotate(context, style, stepID, summaryFile string, priority int) (map[string]interface{}, error) {
+func (c *CLI) annotate(context, style, summaryFile string, priority int) (map[string]interface{}, error) {
 	store, err := c.loadAnnotations()
 	if err != nil {
 		return nil, err
-	}
-
-	if stepID == "" {
-		stepID = c.generateStepID()
 	}
 
 	summary, err := c.readSummaryFile(summaryFile)
@@ -145,7 +160,6 @@ func (c *CLI) annotate(context, style, stepID, summaryFile string, priority int)
 			CreatedAt: time.Now().Format(time.RFC3339),
 			Context:   execContext,
 			Data: ContextData{
-				StepID:           stepID,
 				Timestamp:        time.Now().Format(time.RFC3339),
 				Style:            style,
 				Summary:          summary,
@@ -175,7 +189,6 @@ func (c *CLI) annotate(context, style, stepID, summaryFile string, priority int)
 		if summaryFile != "" {
 			annotation.Data.SummaryFile = summaryFile
 		}
-		annotation.Data.StepID = stepID
 		annotation.Data.Timestamp = time.Now().Format(time.RFC3339)
 		annotation.Data.PlanExecutionId = planExecId
 		annotation.Data.StageExecutionId = stageExecId
@@ -190,8 +203,8 @@ func (c *CLI) annotate(context, style, stepID, summaryFile string, priority int)
 
 	result := map[string]interface{}{
 		"context": context,
-		"stepid":  stepID,
-		"message": fmt.Sprintf("Annotation stored for context '%s' with step ID '%s'", context, stepID),
+		"stepid":  execContext.StepID,
+		"message": fmt.Sprintf("Annotation stored for context '%s' with step ID '%s'", context, execContext.StepID),
 	}
 
 	return result, nil
@@ -213,7 +226,6 @@ func main() {
 	fs := flag.NewFlagSet("annotate", flag.ExitOnError)
 	context := fs.String("context", "", "Context of the step (used as ID) - required")
 	style := fs.String("style", "", "Style for the annotation (replace)")
-	stepID := fs.String("stepid", "", "Step ID (generated automatically if not provided)")
 	summary := fs.String("summary", "", "Path to summary file (markdown content to append)")
 	priority := fs.Int("priority", 0, "Priority level (replace, 0 means no change for existing steps)")
 
@@ -226,7 +238,7 @@ func main() {
 	}
 
 	cli := NewCLI()
-	result, err := cli.annotate(*context, *style, *stepID, *summary, *priority)
+	result, err := cli.annotate(*context, *style, *summary, *priority)
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
 		os.Exit(1)

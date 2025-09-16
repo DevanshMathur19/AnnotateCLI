@@ -24,7 +24,6 @@ A CLI tool for creating and storing annotation properties in Harness CI/CD pipel
 ### Optional Parameters
 
 - `--style`: Annotation style (replaces existing value)
-- `--stepid`: Step identifier (auto-generated if not provided)
 - `--priority`: Priority level (default: 5, replaces existing value)
 
 ### Environment Variables
@@ -35,6 +34,7 @@ The CLI automatically reads these Harness environment variables:
 - `HARNESS_STEP_ID`: Current step ID
 - `HARNESS_ACCOUNT_ID`: Account identifier
 - `HARNESS_PROJECT_ID`: Project identifier
+- `HARNESS_ANNOTATIONS_FILE`: If set, target path where the CLI writes annotations JSON
 
 ## Examples
 
@@ -43,9 +43,10 @@ The CLI automatically reads these Harness environment variables:
 ./cli annotate --context "build-validation" --summary "test-results.md" --priority 8
 ```
 
-### Update existing step (append summary)
+### Append to existing context (in the same step)
 ```bash
-./cli annotate --context "build-validation" --stepid "abc12345" --summary "additional-notes.md"
+# Reuse the same --context to append additional content within the same step
+./cli annotate --context "build-validation" --summary "additional-notes.md"
 ```
 
 ### With custom style
@@ -55,8 +56,14 @@ The CLI automatically reads these Harness environment variables:
 
 ## Output Files
 
-- **annotations.json**: Structured data containing all annotations and metadata
+- **annotations JSON**: Structured data containing all annotations and metadata. The output path is:
+  1. `HARNESS_ANNOTATIONS_FILE` environment variable (if set)
+  2. `./annotations.json` (default)
 - User-created **.md files**: Summary content files (not modified by CLI)
+
+### Notes on Step ID
+- The Harness step identifier is sourced from the environment and stored in `execution_context.harness_step_id`.
+- There is no separate `--stepid` argument; per-step annotations are written to a per-step file (via `HARNESS_ANNOTATIONS_FILE`), and context-based entries are merged within that file.
 
 ## Build
 
@@ -74,4 +81,3 @@ GOOS=windows GOARCH=amd64 go build -o cli-windows.exe main.go
 
 # macOS
 GOOS=darwin GOARCH=amd64 go build -o cli-macos main.go
-```
