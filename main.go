@@ -9,33 +9,37 @@ import (
 	"time"
 )
 
-type ContextData struct {
-	Timestamp        string `json:"timestamp"`
-	Style            string `json:"style"`
-	Summary          string `json:"summary"`
-	SummaryFile      string `json:"summary_file"`
-	Priority         int    `json:"priority"`
-	PlanExecutionId  string `json:"planExecutionId"`
-	StageExecutionId string `json:"stageExecutionId"`
+// New on-disk structure:
+// {
+//   "annotations": [ { ... per-context annotation ... } ],
+//   "planExecutionId": "...",
+//   "stageExecutionId": "...",
+//   "created_at": "...",
+//   "account": "...",
+//   "project": "...",
+//   "org": "...",
+//   "pipeline": "..."
+// }
+
+type AnnotationEntry struct {
+	ContextName string `json:"context_name"`
+	Timestamp   string `json:"timestamp"`
+	Style       string `json:"style"`
+	Summary     string `json:"summary"`
+	SummaryFile string `json:"summary_file"`
+	Priority    int    `json:"priority"`
 }
 
-type ExecutionContext struct {
-	ExecutionID string `json:"execution_id"`
-	StepID      string `json:"harness_step_id"`
-	Account     string `json:"account"`
-	Project     string `json:"project"`
-	Org         string `json:"org"`
-	Pipeline    string `json:"pipeline"`
-	Stage       string `json:"stage"`
+type AnnotationsEnvelope struct {
+	Annotations      []AnnotationEntry `json:"annotations"`
+	PlanExecutionId  string            `json:"planExecutionId"`
+	StageExecutionId string            `json:"stageExecutionId"`
+	CreatedAt        string            `json:"created_at"`
+	Account          string            `json:"account"`
+	Project          string            `json:"project"`
+	Org              string            `json:"org"`
+	Pipeline         string            `json:"pipeline"`
 }
-
-type Annotation struct {
-	CreatedAt string           `json:"created_at"`
-	Context   ExecutionContext `json:"execution_context"`
-	Data      ContextData      `json:"data"`
-}
-
-type AnnotationStore map[string]Annotation
 
 type CLI struct {
 	annotationsFile string
@@ -51,32 +55,30 @@ func NewCLI() *CLI {
 	}
 }
 
-func (c *CLI) loadAnnotations() (AnnotationStore, error) {
-	store := make(AnnotationStore)
+func (c *CLI) loadEnvelope() (AnnotationsEnvelope, error) {
+	env := AnnotationsEnvelope{}
 
 	if _, err := os.Stat(c.annotationsFile); os.IsNotExist(err) {
-		return store, nil
+		return env, nil
 	}
 
 	data, err := os.ReadFile(c.annotationsFile)
 	if err != nil {
-		return nil, err
+		return env, err
 	}
 
 	if len(data) == 0 {
-		return store, nil
+		return env, nil
 	}
 
-	err = json.Unmarshal(data, &store)
-	if err != nil {
-		return nil, err
+	if err := json.Unmarshal(data, &env); err != nil {
+		return env, fmt.Errorf("invalid annotations file format: %w", err)
 	}
-
-	return store, nil
+	return env, nil
 }
 
-func (c *CLI) saveAnnotations(store AnnotationStore) error {
-	data, err := json.MarshalIndent(store, "", "  ")
+func (c *CLI) saveEnvelope(env AnnotationsEnvelope) error {
+	data, err := json.MarshalIndent(env, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -105,27 +107,17 @@ func (c *CLI) saveAnnotations(store AnnotationStore) error {
 	return nil
 }
 
-func (c *CLI) getExecutionContext() (ExecutionContext, string, string) {
-	executionId := os.Getenv("HARNESS_EXECUTION_ID")
-	stageId := os.Getenv("HARNESS_STAGE_ID")
-	stageUuid := os.Getenv("HARNESS_STAGE_UUID")
-
-	stageExecutionId := stageUuid
-	if stageExecutionId == "" {
-		stageExecutionId = stageId
-	}
-
-	context := ExecutionContext{
-		ExecutionID: executionId,
-		StepID:      os.Getenv("HARNESS_STEP_ID"),
-		Account:     os.Getenv("HARNESS_ACCOUNT_ID"),
-		Project:     os.Getenv("HARNESS_PROJECT_ID"),
-		Org:         os.Getenv("HARNESS_ORG_ID"),
-		Pipeline:    os.Getenv("HARNESS_PIPELINE_ID"),
-		Stage:       stageId,
-	}
-
-	return context, executionId, stageExecutionId
+// get harness env needed for envelope metadata and messaging
+func (c *CLI) getHarnessEnv() (account, project, org, pipeline, executionId, stageId, stageUuid, stepId string) {
+	executionId = os.Getenv("HARNESS_EXECUTION_ID")
+	stageId = os.Getenv("HARNESS_STAGE_ID")
+	stageUuid = os.Getenv("HARNESS_STAGE_UUID")
+	account = os.Getenv("HARNESS_ACCOUNT_ID")
+	project = os.Getenv("HARNESS_PROJECT_ID")
+	org = os.Getenv("HARNESS_ORG_ID")
+	pipeline = os.Getenv("HARNESS_PIPELINE_ID")
+	stepId = os.Getenv("HARNESS_STEP_ID")
+	return
 }
 
 func (c *CLI) readSummaryFile(filePath string) (string, error) {
@@ -141,8 +133,8 @@ func (c *CLI) readSummaryFile(filePath string) (string, error) {
 	return string(data), nil
 }
 
-func (c *CLI) annotate(context, style, summaryFile string, priority int) (map[string]interface{}, error) {
-	store, err := c.loadAnnotations()
+func (c *CLI) annotate(contextName, style, summaryFile string, priority int) (map[string]interface{}, error) {
+	env, err := c.loadEnvelope()
 	if err != nil {
 		return nil, err
 	}
@@ -152,61 +144,87 @@ func (c *CLI) annotate(context, style, summaryFile string, priority int) (map[st
 		return nil, err
 	}
 
-	execContext, planExecId, stageExecId := c.getExecutionContext()
+	account, project, org, pipeline, executionId, stageId, stageUuid, stepId := c.getHarnessEnv()
 
-	annotation, exists := store[context]
-	if !exists {
-		annotation = Annotation{
-			CreatedAt: time.Now().Format(time.RFC3339),
-			Context:   execContext,
-			Data: ContextData{
-				Timestamp:        time.Now().Format(time.RFC3339),
-				Style:            style,
-				Summary:          summary,
-				SummaryFile:      summaryFile,
-				Priority:         priority,
-				PlanExecutionId:  planExecId,
-				StageExecutionId: stageExecId,
-			},
+	// Initialize top-level metadata once (when file is new or fields are empty)
+	if env.Account == "" {
+		env.Account = account
+	}
+	if env.Project == "" {
+		env.Project = project
+	}
+	if env.Org == "" {
+		env.Org = org
+	}
+	if env.Pipeline == "" {
+		env.Pipeline = pipeline
+	}
+	if env.PlanExecutionId == "" {
+		env.PlanExecutionId = executionId
+	}
+	if env.StageExecutionId == "" {
+		if stageUuid != "" {
+			env.StageExecutionId = stageUuid
+		} else {
+			env.StageExecutionId = stageId
 		}
-	} else {
-		annotation.Context = execContext
-
-		if style != "" && annotation.Data.Style != style {
-			annotation.Data.Summary = summary
-			annotation.Data.Style = style
-		} else if summary != "" {
-			if annotation.Data.Summary != "" {
-				annotation.Data.Summary += "\n" + summary
-			} else {
-				annotation.Data.Summary = summary
-			}
-		}
-
-		if priority > 0 {
-			annotation.Data.Priority = priority
-		}
-		if summaryFile != "" {
-			annotation.Data.SummaryFile = summaryFile
-		}
-		annotation.Data.Timestamp = time.Now().Format(time.RFC3339)
-		annotation.Data.PlanExecutionId = planExecId
-		annotation.Data.StageExecutionId = stageExecId
+	}
+	if env.CreatedAt == "" {
+		env.CreatedAt = time.Now().Format(time.RFC3339)
 	}
 
-	store[context] = annotation
+	// Find existing entry for this context
+	idx := -1
+	for i := range env.Annotations {
+		if env.Annotations[i].ContextName == contextName {
+			idx = i
+			break
+		}
+	}
 
-	err = c.saveAnnotations(store)
-	if err != nil {
+	if idx == -1 {
+		// New context entry
+		env.Annotations = append(env.Annotations, AnnotationEntry{
+			ContextName: contextName,
+			Timestamp:   time.Now().Format(time.RFC3339),
+			Style:       style,
+			Summary:     summary,
+			SummaryFile: summaryFile,
+			Priority:    priority,
+		})
+	} else {
+		// Merge into existing entry
+		entry := env.Annotations[idx]
+		if style != "" && entry.Style != style {
+			// Replace semantics when style changes
+			entry.Style = style
+			entry.Summary = summary
+		} else if summary != "" {
+			if entry.Summary != "" {
+				entry.Summary += "\n" + summary
+			} else {
+				entry.Summary = summary
+			}
+		}
+		if priority > 0 {
+			entry.Priority = priority
+		}
+		if summaryFile != "" {
+			entry.SummaryFile = summaryFile
+		}
+		entry.Timestamp = time.Now().Format(time.RFC3339)
+		env.Annotations[idx] = entry
+	}
+
+	if err := c.saveEnvelope(env); err != nil {
 		return nil, err
 	}
 
 	result := map[string]interface{}{
-		"context": context,
-		"stepid":  execContext.StepID,
-		"message": fmt.Sprintf("Annotation stored for context '%s' with step ID '%s'", context, execContext.StepID),
+		"context": contextName,
+		"stepid":  stepId,
+		"message": fmt.Sprintf("Annotation stored for context '%s' with step ID '%s'", contextName, stepId),
 	}
-
 	return result, nil
 }
 
