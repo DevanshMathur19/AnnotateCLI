@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+const MaxSummaryFileBytes = 64 * 1024 // 64KB limit for a single summary file
+
 // New on-disk structure:
 // {
 //   "annotations": [ { ... per-context annotation ... } ],
@@ -125,6 +127,14 @@ func (c *CLI) readSummaryFile(filePath string) (string, error) {
 		return "", nil
 	}
 
+	info, err := os.Stat(filePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to stat summary file '%s': %v", filePath, err)
+	}
+	if info.Size() > MaxSummaryFileBytes {
+		return "", fmt.Errorf("summary file '%s' exceeds %d bytes (64KB) with size %d bytes", filePath, MaxSummaryFileBytes, info.Size())
+	}
+
 	data, err := os.ReadFile(filePath)
 	if err != nil {
 		return "", fmt.Errorf("failed to read summary file '%s': %v", filePath, err)
@@ -229,14 +239,16 @@ func (c *CLI) annotate(contextName, style, summaryFile string, priority int) (ma
 }
 
 func main() {
+	prog := filepath.Base(os.Args[0])
 	if len(os.Args) < 2 {
-		fmt.Println("Usage: cli annotate [flags]")
+		fmt.Printf("Usage: %s annotate [flags]\n", prog)
 		os.Exit(1)
 	}
 
 	command := os.Args[1]
 
 	if command != "annotate" {
+		fmt.Printf("Usage: %s annotate [flags]\n", prog)
 		fmt.Println("Available commands: annotate")
 		os.Exit(1)
 	}
