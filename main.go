@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -38,7 +39,8 @@ type AnnotationEntry struct {
 }
 
 type AnnotationsEnvelope struct {
-	Annotations []AnnotationEntry `json:"annotations"`
+	PlanExecutionID string            `json:"planExecutionId,omitempty"`
+	Annotations     []AnnotationEntry `json:"annotations"`
 }
 
 type CLI struct {
@@ -112,6 +114,10 @@ func (c *CLI) getStepID() string {
 	return os.Getenv("HARNESS_STEP_ID")
 }
 
+func (c *CLI) getPlanExecutionID() string {
+	return os.Getenv("HARNESS_EXECUTION_ID")
+}
+
 func (c *CLI) readSummaryFile(filePath string) (string, error) {
 	if filePath == "" {
 		return "", nil
@@ -137,6 +143,13 @@ func (c *CLI) annotate(contextName, style, summaryFile, mode string, priority in
 	env, err := c.loadEnvelope()
 	if err != nil {
 		return nil, err
+	}
+
+	// Ensure planExecutionId is present at the root for lite-engine to post annotations
+	if strings.TrimSpace(env.PlanExecutionID) == "" {
+		if pe := c.getPlanExecutionID(); strings.TrimSpace(pe) != "" {
+			env.PlanExecutionID = pe
+		}
 	}
 
 	summary, err := c.readSummaryFile(summaryFile)
