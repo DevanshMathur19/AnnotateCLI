@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -11,16 +12,19 @@ import (
 
 const MaxSummaryFileBytes = 64 * 1024 // 64KB limit for a single summary file
 
-// New on-disk structure:
+// On-disk structure (annotations-only):
 // {
-//   "annotations": [ { ... per-context annotation ... } ],
-//   "planExecutionId": "...",
-//   "stageExecutionId": "...",
-//   "created_at": "...",
-//   "account": "...",
-//   "project": "...",
-//   "org": "...",
-//   "pipeline": "..."
+//   "annotations": [
+//     {
+//       "context_name": "build",
+//       "timestamp": "RFC3339",
+//       "style": "info|success|warning|error",
+//       "summary": "markdown...",
+//       "summary_file": "path (echo)",
+//       "priority": 0,
+//       "mode": "append|replace|delete" // optional; defaults to append at engine side if omitted
+//     }
+//   ]
 // }
 
 type AnnotationEntry struct {
@@ -30,17 +34,11 @@ type AnnotationEntry struct {
 	Summary     string `json:"summary"`
 	SummaryFile string `json:"summary_file"`
 	Priority    int    `json:"priority"`
+	Mode        string `json:"mode,omitempty"`
 }
 
 type AnnotationsEnvelope struct {
-	Annotations      []AnnotationEntry `json:"annotations"`
-	PlanExecutionId  string            `json:"planExecutionId"`
-	StageExecutionId string            `json:"stageExecutionId"`
-	CreatedAt        string            `json:"created_at"`
-	Account          string            `json:"account"`
-	Project          string            `json:"project"`
-	Org              string            `json:"org"`
-	Pipeline         string            `json:"pipeline"`
+	Annotations []AnnotationEntry `json:"annotations"`
 }
 
 type CLI struct {
@@ -109,17 +107,9 @@ func (c *CLI) saveEnvelope(env AnnotationsEnvelope) error {
 	return nil
 }
 
-// get harness env needed for envelope metadata and messaging
-func (c *CLI) getHarnessEnv() (account, project, org, pipeline, executionId, stageId, stageUuid, stepId string) {
-	executionId = os.Getenv("HARNESS_EXECUTION_ID")
-	stageId = os.Getenv("HARNESS_STAGE_ID")
-	stageUuid = os.Getenv("HARNESS_STAGE_UUID")
-	account = os.Getenv("HARNESS_ACCOUNT_ID")
-	project = os.Getenv("HARNESS_PROJECT_ID")
-	org = os.Getenv("HARNESS_ORG_ID")
-	pipeline = os.Getenv("HARNESS_PIPELINE_ID")
-	stepId = os.Getenv("HARNESS_STEP_ID")
-	return
+// minimal harness env for messaging only
+func (c *CLI) getStepID() string {
+	return os.Getenv("HARNESS_STEP_ID")
 }
 
 func (c *CLI) readSummaryFile(filePath string) (string, error) {
@@ -143,7 +133,7 @@ func (c *CLI) readSummaryFile(filePath string) (string, error) {
 	return string(data), nil
 }
 
-func (c *CLI) annotate(contextName, style, summaryFile string, priority int) (map[string]interface{}, error) {
+func (c *CLI) annotate(contextName, style, summaryFile, mode string, priority int) (map[string]interface{}, error) {
 	env, err := c.loadEnvelope()
 	if err != nil {
 		return nil, err
@@ -154,33 +144,17 @@ func (c *CLI) annotate(contextName, style, summaryFile string, priority int) (ma
 		return nil, err
 	}
 
-	account, project, org, pipeline, executionId, stageId, stageUuid, stepId := c.getHarnessEnv()
+	stepId := c.getStepID()
 
-	// Initialize top-level metadata once (when file is new or fields are empty)
-	if env.Account == "" {
-		env.Account = account
-	}
-	if env.Project == "" {
-		env.Project = project
-	}
-	if env.Org == "" {
-		env.Org = org
-	}
-	if env.Pipeline == "" {
-		env.Pipeline = pipeline
-	}
-	if env.PlanExecutionId == "" {
-		env.PlanExecutionId = executionId
-	}
-	if env.StageExecutionId == "" {
-		if stageUuid != "" {
-			env.StageExecutionId = stageUuid
-		} else {
-			env.StageExecutionId = stageId
-		}
-	}
-	if env.CreatedAt == "" {
-		env.CreatedAt = time.Now().Format(time.RFC3339)
+	// Normalize mode
+	switch mode {
+	case "replace", "append", "delete":
+		// ok
+	case "":
+		mode = "replace"
+	default:
+		// unknown -> default to replace
+		mode = "replace"
 	}
 
 	// Find existing entry for this context
@@ -201,28 +175,49 @@ func (c *CLI) annotate(contextName, style, summaryFile string, priority int) (ma
 			Summary:     summary,
 			SummaryFile: summaryFile,
 			Priority:    priority,
+			Mode:        mode,
 		})
 	} else {
-		// Merge into existing entry
+		// Merge into existing entry based on mode
 		entry := env.Annotations[idx]
-		if style != "" && entry.Style != style {
-			// Replace semantics when style changes
-			entry.Style = style
+		entry.Timestamp = time.Now().Format(time.RFC3339)
+		if mode == "delete" {
+			// mark as delete; content not needed
+			entry.Mode = "delete"
+			entry.Summary = ""
+			entry.Style = ""
+			entry.Priority = 0
+		} else if mode == "replace" {
+			if style != "" {
+				entry.Style = style
+			}
 			entry.Summary = summary
-		} else if summary != "" {
-			if entry.Summary != "" {
-				entry.Summary += "\n" + summary
-			} else {
-				entry.Summary = summary
+			entry.Mode = "replace"
+			if priority > 0 {
+				entry.Priority = priority
+			}
+			if summaryFile != "" {
+				entry.SummaryFile = summaryFile
+			}
+		} else { // append
+			if style != "" {
+				entry.Style = style
+			}
+			if summary != "" {
+				if entry.Summary != "" {
+					entry.Summary += "\n" + summary
+				} else {
+					entry.Summary = summary
+				}
+			}
+			entry.Mode = "append"
+			if priority > 0 {
+				entry.Priority = priority
+			}
+			if summaryFile != "" {
+				entry.SummaryFile = summaryFile
 			}
 		}
-		if priority > 0 {
-			entry.Priority = priority
-		}
-		if summaryFile != "" {
-			entry.SummaryFile = summaryFile
-		}
-		entry.Timestamp = time.Now().Format(time.RFC3339)
 		env.Annotations[idx] = entry
 	}
 
@@ -242,7 +237,8 @@ func main() {
 	prog := filepath.Base(os.Args[0])
 	if len(os.Args) < 2 {
 		fmt.Printf("Usage: %s annotate [flags]\n", prog)
-		os.Exit(1)
+		// Non-fatal for pipelines
+		os.Exit(0)
 	}
 
 	command := os.Args[1]
@@ -250,28 +246,33 @@ func main() {
 	if command != "annotate" {
 		fmt.Printf("Usage: %s annotate [flags]\n", prog)
 		fmt.Println("Available commands: annotate")
-		os.Exit(1)
+		os.Exit(0)
 	}
 
-	fs := flag.NewFlagSet("annotate", flag.ExitOnError)
+	fs := flag.NewFlagSet("annotate", flag.ContinueOnError)
+	// suppress default usage output on parse errors; we'll control messaging
+	fs.SetOutput(io.Discard)
 	context := fs.String("context", "", "Context of the step (used as ID) - required")
-	style := fs.String("style", "", "Style for the annotation (replace)")
-	summary := fs.String("summary", "", "Path to summary file (markdown content to append)")
-	priority := fs.Int("priority", 0, "Priority level (replace, 0 means no change for existing steps)")
+	style := fs.String("style", "", "Annotation style (info|success|warning|error)")
+	summary := fs.String("summary", "", "Path to summary file (markdown content)")
+	mode := fs.String("mode", "replace", "Annotation mode (append|replace|delete). Optional; defaults to replace")
+	priority := fs.Int("priority", 0, "Annotation priority (int). Optional")
 
-	fs.Parse(os.Args[2:])
+	if err := fs.Parse(os.Args[2:]); err != nil {
+		fmt.Fprintf(os.Stderr, "[ANN_CLI] warning: failed to parse flags: %v\n", err)
+		os.Exit(0)
+	}
 
 	if *context == "" {
-		fmt.Println("Error: --context is required")
-		fs.Usage()
-		os.Exit(1)
+		fmt.Fprintln(os.Stderr, "[ANN_CLI] warning: --context is required")
+		os.Exit(0)
 	}
 
 	cli := NewCLI()
-	result, err := cli.annotate(*context, *style, *summary, *priority)
+	result, err := cli.annotate(*context, *style, *summary, *mode, *priority)
 	if err != nil {
-		fmt.Printf("Error: %v\n", err)
-		os.Exit(1)
+		fmt.Fprintf(os.Stderr, "[ANN_CLI] warning: %v\n", err)
+		os.Exit(0)
 	}
 
 	resultJSON, _ := json.MarshalIndent(result, "", "  ")
