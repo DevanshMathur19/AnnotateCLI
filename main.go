@@ -21,7 +21,6 @@ const MaxSummaryFileBytes = 64 * 1024 // 64KB limit for a single summary file
 //       "timestamp": "RFC3339",
 //       "style": "info|success|warning|error",
 //       "summary": "markdown...",
-//       "summary_file": "path (echo)",
 //       "priority": 0,
 //       "mode": "append|replace|delete" // optional; defaults to append at engine side if omitted
 //     }
@@ -33,9 +32,9 @@ type AnnotationEntry struct {
 	Timestamp   string `json:"timestamp"`
 	Style       string `json:"style"`
 	Summary     string `json:"summary"`
-	SummaryFile string `json:"summary_file"`
 	Priority    int    `json:"priority"`
 	Mode        string `json:"mode,omitempty"`
+	StepId      string `json:"step_id,omitempty"`
 }
 
 type AnnotationsEnvelope struct {
@@ -157,7 +156,8 @@ func (c *CLI) annotate(contextName, style, summaryFile, mode string, priority in
 		return nil, err
 	}
 
-	stepId := c.getStepID()
+	// step id is always taken from env (HARNESS_STEP_ID)
+	stepIdVal := c.getStepID()
 
 	// Normalize mode
 	switch mode {
@@ -186,9 +186,9 @@ func (c *CLI) annotate(contextName, style, summaryFile, mode string, priority in
 			Timestamp:   time.Now().Format(time.RFC3339),
 			Style:       style,
 			Summary:     summary,
-			SummaryFile: summaryFile,
 			Priority:    priority,
 			Mode:        mode,
+			StepId:      stepIdVal,
 		})
 	} else {
 		// Merge into existing entry based on mode
@@ -200,6 +200,9 @@ func (c *CLI) annotate(contextName, style, summaryFile, mode string, priority in
 			entry.Summary = ""
 			entry.Style = ""
 			entry.Priority = 0
+			if stepIdVal != "" {
+				entry.StepId = stepIdVal
+			}
 		} else if mode == "replace" {
 			if style != "" {
 				entry.Style = style
@@ -209,8 +212,8 @@ func (c *CLI) annotate(contextName, style, summaryFile, mode string, priority in
 			if priority > 0 {
 				entry.Priority = priority
 			}
-			if summaryFile != "" {
-				entry.SummaryFile = summaryFile
+			if stepIdVal != "" {
+				entry.StepId = stepIdVal
 			}
 		} else { // append
 			if style != "" {
@@ -227,8 +230,8 @@ func (c *CLI) annotate(contextName, style, summaryFile, mode string, priority in
 			if priority > 0 {
 				entry.Priority = priority
 			}
-			if summaryFile != "" {
-				entry.SummaryFile = summaryFile
+			if stepIdVal != "" {
+				entry.StepId = stepIdVal
 			}
 		}
 		env.Annotations[idx] = entry
@@ -240,8 +243,8 @@ func (c *CLI) annotate(contextName, style, summaryFile, mode string, priority in
 
 	result := map[string]interface{}{
 		"context": contextName,
-		"stepid":  stepId,
-		"message": fmt.Sprintf("Annotation stored for context '%s' with step ID '%s'", contextName, stepId),
+		"stepid":  stepIdVal,
+		"message": fmt.Sprintf("Annotation stored for context '%s' with step ID '%s'", contextName, stepIdVal),
 	}
 	return result, nil
 }
