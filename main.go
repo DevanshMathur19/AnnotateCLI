@@ -18,7 +18,7 @@ const MaxSummaryFileBytes = 64 * 1024 // 64KB limit for a single summary file
 //   "annotations": [
 //     {
 //       "context_name": "build",
-//       "timestamp": "RFC3339",
+//       "timestamp": 1739456789123, // epoch millis
 //       "style": "info|success|warning|error",
 //       "summary": "markdown...",
 //       "priority": 0,
@@ -29,7 +29,7 @@ const MaxSummaryFileBytes = 64 * 1024 // 64KB limit for a single summary file
 
 type AnnotationEntry struct {
 	ContextName string `json:"context_name"`
-	Timestamp   string `json:"timestamp"`
+	Timestamp   int64  `json:"timestamp"`
 	Style       string `json:"style"`
 	Summary     string `json:"summary"`
 	Priority    int    `json:"priority"`
@@ -138,7 +138,7 @@ func (c *CLI) readSummaryFile(filePath string) (string, error) {
 	return string(data), nil
 }
 
-func (c *CLI) annotate(contextName, style, summaryFile, mode string, priority int) (map[string]interface{}, error) {
+func (c *CLI) annotate(contextName, style, summary, mode string, priority int) (map[string]interface{}, error) {
 	env, err := c.loadEnvelope()
 	if err != nil {
 		return nil, err
@@ -151,13 +151,19 @@ func (c *CLI) annotate(contextName, style, summaryFile, mode string, priority in
 		}
 	}
 
-	summary, err := c.readSummaryFile(summaryFile)
-	if err != nil {
-		return nil, err
-	}
+	// summary is already resolved by the caller. It may be empty.
 
 	// step id is always taken from env (HARNESS_STEP_ID)
 	stepIdVal := c.getStepID()
+
+	// normalize context name: trim spaces and cap to 256 runes
+	ctx := strings.TrimSpace(contextName)
+	if ctx == "" {
+		ctx = contextName
+	}
+	if r := []rune(ctx); len(r) > 256 {
+		ctx = string(r[:256])
+	}
 
 	// Normalize mode
 	switch mode {
@@ -170,10 +176,13 @@ func (c *CLI) annotate(contextName, style, summaryFile, mode string, priority in
 		mode = "replace"
 	}
 
+	// epoch millis timestamp
+	ts := time.Now().UnixMilli()
+
 	// Find existing entry for this context
 	idx := -1
 	for i := range env.Annotations {
-		if env.Annotations[i].ContextName == contextName {
+		if env.Annotations[i].ContextName == ctx {
 			idx = i
 			break
 		}
@@ -182,8 +191,8 @@ func (c *CLI) annotate(contextName, style, summaryFile, mode string, priority in
 	if idx == -1 {
 		// New context entry
 		env.Annotations = append(env.Annotations, AnnotationEntry{
-			ContextName: contextName,
-			Timestamp:   time.Now().Format(time.RFC3339),
+			ContextName: ctx,
+			Timestamp:   ts,
 			Style:       style,
 			Summary:     summary,
 			Priority:    priority,
@@ -193,7 +202,7 @@ func (c *CLI) annotate(contextName, style, summaryFile, mode string, priority in
 	} else {
 		// Merge into existing entry based on mode
 		entry := env.Annotations[idx]
-		entry.Timestamp = time.Now().Format(time.RFC3339)
+		entry.Timestamp = ts
 		if mode == "delete" {
 			// mark as delete; content not needed
 			entry.Mode = "delete"
@@ -242,19 +251,53 @@ func (c *CLI) annotate(contextName, style, summaryFile, mode string, priority in
 	}
 
 	result := map[string]interface{}{
-		"context": contextName,
+		"context": ctx,
 		"stepid":  stepIdVal,
-		"message": fmt.Sprintf("Annotation stored for context '%s' with step ID '%s'", contextName, stepIdVal),
+		"message": fmt.Sprintf("Annotation stored for context '%s' with step ID '%s'", ctx, stepIdVal),
 	}
 	return result, nil
+}
+
+func validateFlags(contextName, style, mode string, priority int) error {
+	var issues []string
+	if strings.TrimSpace(contextName) == "" {
+		issues = append(issues, "--context is required")
+	}
+
+	s := strings.ToLower(strings.TrimSpace(style))
+	if s == "" {
+		s = "info"
+	}
+	switch s {
+	case "info", "success", "warning", "error":
+	default:
+		issues = append(issues, "--style must be one of: info, success, warning, error")
+	}
+
+	m := strings.ToLower(strings.TrimSpace(mode))
+	if m == "" {
+		m = "replace"
+	}
+	switch m {
+	case "append", "replace", "delete":
+	default:
+		issues = append(issues, "--mode must be one of: append, replace, delete")
+	}
+
+	if priority < 0 {
+		issues = append(issues, "--priority must be >= 0")
+	}
+
+	if len(issues) > 0 {
+		return fmt.Errorf(strings.Join(issues, "; "))
+	}
+	return nil
 }
 
 func main() {
 	prog := filepath.Base(os.Args[0])
 	if len(os.Args) < 2 {
 		fmt.Printf("Usage: %s annotate [flags]\n", prog)
-		// Non-fatal for pipelines
-		os.Exit(0)
 	}
 
 	command := os.Args[1]
@@ -262,33 +305,45 @@ func main() {
 	if command != "annotate" {
 		fmt.Printf("Usage: %s annotate [flags]\n", prog)
 		fmt.Println("Available commands: annotate")
-		os.Exit(0)
 	}
 
 	fs := flag.NewFlagSet("annotate", flag.ContinueOnError)
 	// suppress default usage output on parse errors; we'll control messaging
 	fs.SetOutput(io.Discard)
-	context := fs.String("context", "", "Context of the step (used as ID) - required")
-	style := fs.String("style", "", "Annotation style (info|success|warning|error)")
-	summary := fs.String("summary", "", "Path to summary file (markdown content)")
+	context := fs.String("context", "", "Context of the step (used as ID) - required (max 256)")
+	style := fs.String("style", "info", "Annotation style (info|success|warning|error)")
+	summary := fs.String("summary", "", "Inline summary content (markdown). Use --summary-file to read from a file")
+	summaryFile := fs.String("summary-file", "", "Path to summary file (.txt or .md)")
 	mode := fs.String("mode", "replace", "Annotation mode (append|replace|delete). Optional; defaults to replace")
-	priority := fs.Int("priority", 0, "Annotation priority (int). Optional")
+	priority := fs.Int("priority", 3, "Annotation priority (int). Optional")
 
 	if err := fs.Parse(os.Args[2:]); err != nil {
 		fmt.Fprintf(os.Stderr, "[ANN_CLI] warning: failed to parse flags: %v\n", err)
-		os.Exit(0)
 	}
 
-	if *context == "" {
-		fmt.Fprintln(os.Stderr, "[ANN_CLI] warning: --context is required")
-		os.Exit(0)
+	if err := validateFlags(*context, *style, *mode, *priority); err != nil {
+		fmt.Fprintf(os.Stderr, "[ANN_CLI] error: %v\n", err)
+		return
 	}
 
 	cli := NewCLI()
-	result, err := cli.annotate(*context, *style, *summary, *mode, *priority)
+
+	// Resolve summary content: file takes precedence over inline text
+	var summaryContent string
+	if strings.TrimSpace(*summaryFile) != "" {
+		sc, err := cli.readSummaryFile(*summaryFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[ANN_CLI] warning: failed to read --summary-file: %v\n", err)
+			return
+		}
+		summaryContent = sc
+	} else {
+		summaryContent = *summary
+	}
+
+	result, err := cli.annotate(*context, *style, summaryContent, *mode, *priority)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[ANN_CLI] warning: %v\n", err)
-		os.Exit(0)
 	}
 
 	resultJSON, _ := json.MarshalIndent(result, "", "  ")
