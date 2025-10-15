@@ -13,20 +13,6 @@ import (
 
 const MaxSummaryFileBytes = 64 * 1024 // 64KB limit for a single summary file
 
-// On-disk structure (annotations-only):
-// {
-//   "annotations": [
-//     {
-//       "context_name": "build",
-//       "timestamp": 1739456789123, // epoch millis
-//       "style": "info|success|warning|error",
-//       "summary": "markdown...",
-//       "priority": 0,
-//       "mode": "append|replace|delete" // optional; defaults to append at engine side if omitted
-//     }
-//   ]
-// }
-
 type AnnotationEntry struct {
 	ContextName string `json:"context_name"`
 	Timestamp   int64  `json:"timestamp"`
@@ -35,6 +21,17 @@ type AnnotationEntry struct {
 	Priority    int    `json:"priority"`
 	Mode        string `json:"mode,omitempty"`
 	StepId      string `json:"step_id,omitempty"`
+}
+
+// isAnnotationsEnabled returns true if CI_ENABLE_PIPELINE_ANNOTATIONS is set to a truthy value
+func isAnnotationsEnabled() bool {
+	v := strings.TrimSpace(os.Getenv("CI_ENABLE_PIPELINE_ANNOTATIONS"))
+	switch strings.ToLower(v) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 type AnnotationsEnvelope struct {
@@ -284,8 +281,8 @@ func validateFlags(contextName, style, mode string, priority int) error {
 		issues = append(issues, "--mode must be one of: append, replace, delete")
 	}
 
-	if priority < 0 {
-		issues = append(issues, "--priority must be >= 0")
+	if priority <= 0 {
+		issues = append(issues, "--priority must be > 0")
 	}
 
 	if len(issues) > 0 {
@@ -305,6 +302,13 @@ func main() {
 	if command != "annotate" {
 		fmt.Printf("Usage: %s annotate [flags]\n", prog)
 		fmt.Println("Available commands: annotate")
+	}
+
+	// Feature flag: gate CLI behavior behind CI_ENABLE_PIPELINE_ANNOTATIONS
+	if command == "annotate" && !isAnnotationsEnabled() {
+		// No-op when disabled; do not fail the step
+		fmt.Fprintln(os.Stderr, "[ANN_CLI] annotations disabled by CI_ENABLE_PIPELINE_ANNOTATIONS")
+		return
 	}
 
 	fs := flag.NewFlagSet("annotate", flag.ContinueOnError)
