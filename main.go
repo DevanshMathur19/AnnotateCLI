@@ -43,13 +43,8 @@ func truncateUTF8ByBytes(s string, limit int) string {
 
 // isAnnotationsEnabled returns true if CI_ENABLE_PIPELINE_ANNOTATIONS is set to a truthy value
 func isAnnotationsEnabled() bool {
-	v := strings.TrimSpace(os.Getenv("CI_ENABLE_PIPELINE_ANNOTATIONS"))
-	switch strings.ToLower(v) {
-	case "1", "true", "yes", "on":
-		return true
-	default:
-		return false
-	}
+	v := os.Getenv("CI_ENABLE_PIPELINE_ANNOTATIONS")
+	return v == "true"
 }
 
 type AnnotationsEnvelope struct {
