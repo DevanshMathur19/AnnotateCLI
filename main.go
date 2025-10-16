@@ -41,9 +41,9 @@ func truncateUTF8ByBytes(s string, limit int) string {
 	return s[:last]
 }
 
-// isAnnotationsEnabled returns true if CI_ENABLE_PIPELINE_ANNOTATIONS is set to a truthy value
+// isAnnotationsEnabled returns true if CI_ENABLE_HARNESS_ANNOTATIONS is set to a truthy value
 func isAnnotationsEnabled() bool {
-	v := os.Getenv("CI_ENABLE_PIPELINE_ANNOTATIONS")
+	v := os.Getenv("CI_ENABLE_HARNESS_ANNOTATIONS")
 	return v == "true"
 }
 
@@ -317,10 +317,10 @@ func main() {
 		fmt.Println("Available commands: annotate")
 	}
 
-	// Feature flag: gate CLI behavior behind CI_ENABLE_PIPELINE_ANNOTATIONS
+	// Feature flag: gate CLI behavior behind CI_ENABLE_HARNESS_ANNOTATIONS
 	if command == "annotate" && !isAnnotationsEnabled() {
 		// No-op when disabled; do not fail the step
-		fmt.Fprintln(os.Stderr, "[ANN_CLI] annotations disabled by CI_ENABLE_PIPELINE_ANNOTATIONS")
+		fmt.Fprintln(os.Stderr, "[ANN_CLI] annotations disabled by CI_ENABLE_HARNESS_ANNOTATIONS")
 		return
 	}
 
