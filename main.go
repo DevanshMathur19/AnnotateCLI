@@ -23,51 +23,6 @@ type AnnotationEntry struct {
 	Mode      string `json:"mode,omitempty"`
 }
 
-// normalizeAnnotateArgs lowercases known flag names so flags are case-insensitive.
-// It supports forms like --FLAG, --FLAG=value, -H (help). Unknown flags are left as-is.
-func normalizeAnnotateArgs(args []string) []string {
-	if len(args) == 0 {
-		return args
-	}
-	knownLong := map[string]string{
-		"context":      "context",
-		"style":        "style",
-		"summary":      "summary",
-		"summary-file": "summary-file",
-		"mode":         "mode",
-		"priority":     "priority",
-		"help":         "help",
-	}
-	out := make([]string, 0, len(args))
-	for _, tok := range args {
-		if strings.HasPrefix(tok, "--") {
-			// split name and possible value
-			nameVal := strings.SplitN(tok[2:], "=", 2)
-			name := strings.ToLower(nameVal[0])
-			if mapped, ok := knownLong[name]; ok {
-				if len(nameVal) == 2 {
-					out = append(out, "--"+mapped+"="+nameVal[1])
-				} else {
-					out = append(out, "--"+mapped)
-				}
-				continue
-			}
-			// unknown long flag, keep as-is
-			out = append(out, tok)
-		} else if strings.HasPrefix(tok, "-") && len(tok) >= 2 {
-			// Only support case-insensitive -h for help; leave others intact
-			if strings.EqualFold(tok, "-h") {
-				out = append(out, "-h")
-			} else {
-				out = append(out, tok)
-			}
-		} else {
-			out = append(out, tok)
-		}
-	}
-	return out
-}
-
 // truncateUTF8ByBytes truncates a string to the provided byte limit without breaking UTF-8 runes.
 func truncateUTF8ByBytes(s string, limit int) string {
 	if len(s) <= limit {
@@ -169,14 +124,8 @@ func (c *CLI) saveEnvelope(env AnnotationsEnvelope) error {
 }
 
 // minimal harness env for messaging only
-func (c *CLI) getStepID() string {
-	return os.Getenv("HARNESS_STEP_ID")
-}
-
-func (c *CLI) getPlanExecutionID() string {
-	return os.Getenv("HARNESS_EXECUTION_ID")
-}
-
+func (c *CLI) getStepID() string           { return os.Getenv("HARNESS_STEP_ID") }
+func (c *CLI) getPlanExecutionID() string  { return os.Getenv("HARNESS_EXECUTION_ID") }
 func (c *CLI) getAccountID() string        { return os.Getenv("HARNESS_ACCOUNT_ID") }
 func (c *CLI) getOrgID() string            { return os.Getenv("HARNESS_ORG_ID") }
 func (c *CLI) getProjectID() string        { return os.Getenv("HARNESS_PROJECT_ID") }
@@ -243,6 +192,13 @@ func (c *CLI) annotate(contextName, style, summary, mode string, priority int) (
 	}
 
 	// summary is already resolved by the caller. It may be empty.
+
+	// Normalize style and mode values to lowercase for output, regardless of user-provided case.
+	style = strings.ToLower(strings.TrimSpace(style))
+	if style == "" {
+		style = "info"
+	}
+	mode = strings.ToLower(strings.TrimSpace(mode))
 
 	// step id is always taken from env (HARNESS_STEP_ID)
 	stepIdVal := c.getStepID()
@@ -430,10 +386,7 @@ func main() {
 	helpLong := fs.Bool("help", false, "Show help")
 	helpShort := fs.Bool("h", false, "Show help (shorthand)")
 
-	// Normalize flags to be case-insensitive for known flags before parsing
-	normalized := normalizeAnnotateArgs(os.Args[2:])
-
-	if err := fs.Parse(normalized); err != nil {
+	if err := fs.Parse(os.Args[2:]); err != nil {
 		fmt.Fprintf(os.Stderr, "[ANN_CLI] warning: failed to parse flags: %v\n", err)
 		fmt.Printf("Usage: %s annotate [flags]\n", prog)
 		return
@@ -442,6 +395,7 @@ func main() {
 	if *helpLong || *helpShort {
 		fmt.Printf("Usage: %s annotate [flags]\n", prog)
 		fmt.Println("Flags: --context, --style, --summary, --summary-file, --mode, --priority, --help")
+		fmt.Println("Note: flag names must be lowercase.")
 		return
 	}
 
