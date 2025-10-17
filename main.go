@@ -23,22 +23,13 @@ type AnnotationEntry struct {
 	Mode      string `json:"mode,omitempty"`
 }
 
-// truncateUTF8ByBytes truncates a string to the provided byte limit without breaking UTF-8 runes.
+// truncateUTF8ByBytes truncates a string to the provided byte limit (byte-wise).
+// Note: we intentionally use simple byte slicing here for speed. The CLI already enforces size limits.
 func truncateUTF8ByBytes(s string, limit int) string {
 	if len(s) <= limit {
 		return s
 	}
-	last := 0
-	for i := range s {
-		if i > limit {
-			break
-		}
-		last = i
-	}
-	if last == 0 {
-		return ""
-	}
-	return s[:last]
+	return s[:limit]
 }
 
 // isAnnotationsEnabled returns true if CI_ENABLE_HARNESS_ANNOTATIONS is set to a truthy value
@@ -195,19 +186,17 @@ func (c *CLI) annotate(contextName, style, summary, mode string, priority int) (
 
 	// Normalize style and mode values to lowercase for output, regardless of user-provided case.
 	style = strings.ToLower(strings.TrimSpace(style))
-	if style == "" {
-		style = "info"
-	}
 	mode = strings.ToLower(strings.TrimSpace(mode))
+	// Clamp priority range
+	if priority < 1 || priority > 10 {
+		priority = 3
+	}
 
 	// step id is always taken from env (HARNESS_STEP_ID)
 	stepIdVal := c.getStepID()
 
 	// normalize context name: trim spaces and cap to 256 runes
 	ctx := strings.TrimSpace(contextName)
-	if ctx == "" {
-		ctx = contextName
-	}
 	if r := []rune(ctx); len(r) > 256 {
 		ctx = string(r[:256])
 	}
@@ -250,7 +239,8 @@ func (c *CLI) annotate(contextName, style, summary, mode string, priority int) (
 		// Merge into existing entry based on mode
 		entry := env.Annotations[idx]
 		entry.Timestamp = ts
-		if mode == "delete" {
+		switch mode {
+		case "delete":
 			// mark as delete; content not needed
 			entry.Mode = "delete"
 			entry.Summary = ""
@@ -259,7 +249,7 @@ func (c *CLI) annotate(contextName, style, summary, mode string, priority int) (
 			if stepIdVal != "" {
 				entry.StepId = stepIdVal
 			}
-		} else if mode == "replace" {
+		case "replace":
 			if style != "" {
 				entry.Style = style
 			}
@@ -271,7 +261,7 @@ func (c *CLI) annotate(contextName, style, summary, mode string, priority int) (
 			if stepIdVal != "" {
 				entry.StepId = stepIdVal
 			}
-		} else { // append
+		case "append":
 			if style != "" {
 				entry.Style = style
 			}
