@@ -152,32 +152,32 @@ func (c *CLI) annotate(contextName, style, summary, mode string, priority int) (
 
 	// Ensure PMS identifiers are present at the root for lite-engine to post annotations
 	if strings.TrimSpace(env.AccountId) == "" {
-		if v := c.getAccountID(); strings.TrimSpace(v) != "" {
+		if v := c.getAccountID(); v != "" {
 			env.AccountId = v
 		}
 	}
 	if strings.TrimSpace(env.OrgId) == "" {
-		if v := c.getOrgID(); strings.TrimSpace(v) != "" {
+		if v := c.getOrgID(); v != "" {
 			env.OrgId = v
 		}
 	}
 	if strings.TrimSpace(env.ProjectId) == "" {
-		if v := c.getProjectID(); strings.TrimSpace(v) != "" {
+		if v := c.getProjectID(); v != "" {
 			env.ProjectId = v
 		}
 	}
 	if strings.TrimSpace(env.PipelineId) == "" {
-		if v := c.getPipelineID(); strings.TrimSpace(v) != "" {
+		if v := c.getPipelineID(); v != "" {
 			env.PipelineId = v
 		}
 	}
 	if strings.TrimSpace(env.PlanExecutionId) == "" {
-		if v := c.getPlanExecutionID(); strings.TrimSpace(v) != "" {
+		if v := c.getPlanExecutionID(); v != "" {
 			env.PlanExecutionId = v
 		}
 	}
 	if strings.TrimSpace(env.StageExecutionId) == "" {
-		if v := c.getStageExecutionID(); strings.TrimSpace(v) != "" {
+		if v := c.getStageExecutionID(); v != "" {
 			env.StageExecutionId = v
 		}
 	}
