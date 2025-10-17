@@ -48,8 +48,13 @@ func isAnnotationsEnabled() bool {
 }
 
 type AnnotationsEnvelope struct {
-	PlanExecutionID string            `json:"planExecutionId,omitempty"`
-	Annotations     []AnnotationEntry `json:"annotations"`
+	AccountId        string            `json:"accountId,omitempty"`
+	OrgId            string            `json:"orgId,omitempty"`
+	ProjectId        string            `json:"projectId,omitempty"`
+	PipelineId       string            `json:"pipelineId,omitempty"`
+	PlanExecutionId  string            `json:"planExecutionId,omitempty"`
+	StageExecutionId string            `json:"stageExecutionId,omitempty"`
+	Annotations      []AnnotationEntry `json:"annotations"`
 }
 
 type CLI struct {
@@ -127,6 +132,12 @@ func (c *CLI) getPlanExecutionID() string {
 	return os.Getenv("HARNESS_EXECUTION_ID")
 }
 
+func (c *CLI) getAccountID() string        { return os.Getenv("HARNESS_ACCOUNT_ID") }
+func (c *CLI) getOrgID() string            { return os.Getenv("HARNESS_ORG_ID") }
+func (c *CLI) getProjectID() string        { return os.Getenv("HARNESS_PROJECT_ID") }
+func (c *CLI) getPipelineID() string       { return os.Getenv("HARNESS_PIPELINE_ID") }
+func (c *CLI) getStageExecutionID() string { return os.Getenv("HARNESS_STAGE_ID") }
+
 func (c *CLI) readSummaryFile(filePath string) (string, error) {
 	if filePath == "" {
 		return "", nil
@@ -154,10 +165,35 @@ func (c *CLI) annotate(contextName, style, summary, mode string, priority int) (
 		return nil, err
 	}
 
-	// Ensure planExecutionId is present at the root for lite-engine to post annotations
-	if strings.TrimSpace(env.PlanExecutionID) == "" {
-		if pe := c.getPlanExecutionID(); strings.TrimSpace(pe) != "" {
-			env.PlanExecutionID = pe
+	// Ensure PMS identifiers are present at the root for lite-engine to post annotations
+	if strings.TrimSpace(env.AccountId) == "" {
+		if v := c.getAccountID(); strings.TrimSpace(v) != "" {
+			env.AccountId = v
+		}
+	}
+	if strings.TrimSpace(env.OrgId) == "" {
+		if v := c.getOrgID(); strings.TrimSpace(v) != "" {
+			env.OrgId = v
+		}
+	}
+	if strings.TrimSpace(env.ProjectId) == "" {
+		if v := c.getProjectID(); strings.TrimSpace(v) != "" {
+			env.ProjectId = v
+		}
+	}
+	if strings.TrimSpace(env.PipelineId) == "" {
+		if v := c.getPipelineID(); strings.TrimSpace(v) != "" {
+			env.PipelineId = v
+		}
+	}
+	if strings.TrimSpace(env.PlanExecutionId) == "" {
+		if v := c.getPlanExecutionID(); strings.TrimSpace(v) != "" {
+			env.PlanExecutionId = v
+		}
+	}
+	if strings.TrimSpace(env.StageExecutionId) == "" {
+		if v := c.getStageExecutionID(); strings.TrimSpace(v) != "" {
+			env.StageExecutionId = v
 		}
 	}
 
