@@ -23,6 +23,51 @@ type AnnotationEntry struct {
 	Mode      string `json:"mode,omitempty"`
 }
 
+// normalizeAnnotateArgs lowercases known flag names so flags are case-insensitive.
+// It supports forms like --FLAG, --FLAG=value, -H (help). Unknown flags are left as-is.
+func normalizeAnnotateArgs(args []string) []string {
+	if len(args) == 0 {
+		return args
+	}
+	knownLong := map[string]string{
+		"context":      "context",
+		"style":        "style",
+		"summary":      "summary",
+		"summary-file": "summary-file",
+		"mode":         "mode",
+		"priority":     "priority",
+		"help":         "help",
+	}
+	out := make([]string, 0, len(args))
+	for _, tok := range args {
+		if strings.HasPrefix(tok, "--") {
+			// split name and possible value
+			nameVal := strings.SplitN(tok[2:], "=", 2)
+			name := strings.ToLower(nameVal[0])
+			if mapped, ok := knownLong[name]; ok {
+				if len(nameVal) == 2 {
+					out = append(out, "--"+mapped+"="+nameVal[1])
+				} else {
+					out = append(out, "--"+mapped)
+				}
+				continue
+			}
+			// unknown long flag, keep as-is
+			out = append(out, tok)
+		} else if strings.HasPrefix(tok, "-") && len(tok) >= 2 {
+			// Only support case-insensitive -h for help; leave others intact
+			if strings.EqualFold(tok, "-h") {
+				out = append(out, "-h")
+			} else {
+				out = append(out, tok)
+			}
+		} else {
+			out = append(out, tok)
+		}
+	}
+	return out
+}
+
 // truncateUTF8ByBytes truncates a string to the provided byte limit without breaking UTF-8 runes.
 func truncateUTF8ByBytes(s string, limit int) string {
 	if len(s) <= limit {
@@ -344,13 +389,24 @@ func main() {
 	prog := filepath.Base(os.Args[0])
 	if len(os.Args) < 2 {
 		fmt.Printf("Usage: %s annotate [flags]\n", prog)
+		fmt.Println("Available commands: annotate")
+		return
 	}
 
-	command := os.Args[1]
+	// Case-insensitive top-level command/help handling
+	arg1Lower := strings.ToLower(os.Args[1])
+	if arg1Lower == "-h" || arg1Lower == "--help" || arg1Lower == "help" {
+		fmt.Printf("Usage: %s annotate [flags]\n", prog)
+		fmt.Println("Available commands: annotate")
+		return
+	}
+
+	command := strings.ToLower(os.Args[1])
 
 	if command != "annotate" {
 		fmt.Printf("Usage: %s annotate [flags]\n", prog)
 		fmt.Println("Available commands: annotate")
+		return
 	}
 
 	// Feature flag: gate CLI behavior behind CI_ENABLE_HARNESS_ANNOTATIONS
@@ -370,8 +426,30 @@ func main() {
 	mode := fs.String("mode", "replace", "Annotation mode (append|replace|delete). Optional; defaults to replace")
 	priority := fs.Int("priority", 3, "Annotation priority (int). Optional")
 
-	if err := fs.Parse(os.Args[2:]); err != nil {
+	// explicit help flags for the annotate subcommand
+	helpLong := fs.Bool("help", false, "Show help")
+	helpShort := fs.Bool("h", false, "Show help (shorthand)")
+
+	// Normalize flags to be case-insensitive for known flags before parsing
+	normalized := normalizeAnnotateArgs(os.Args[2:])
+
+	if err := fs.Parse(normalized); err != nil {
 		fmt.Fprintf(os.Stderr, "[ANN_CLI] warning: failed to parse flags: %v\n", err)
+		fmt.Printf("Usage: %s annotate [flags]\n", prog)
+		return
+	}
+
+	if *helpLong || *helpShort {
+		fmt.Printf("Usage: %s annotate [flags]\n", prog)
+		fmt.Println("Flags: --context, --style, --summary, --summary-file, --mode, --priority, --help")
+		return
+	}
+
+	// Do not accept extra positional arguments to avoid accidental writes on malformed input.
+	if fs.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "[ANN_CLI] warning: unexpected arguments: %s\n", strings.Join(fs.Args(), " "))
+		fmt.Printf("Usage: %s annotate [flags]\n", prog)
+		return
 	}
 
 	if err := validateFlags(*context, *style, *mode, *priority); err != nil {
@@ -386,7 +464,6 @@ func main() {
 	if strings.TrimSpace(*summaryFile) != "" {
 		sc, err := cli.readSummaryFile(*summaryFile)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "[ANN_CLI] warning: failed to read --summary-file: %v\n", err)
 			return
 		}
 		// Ensure we do not exceed 64KB for file content (already enforced by file size check, but clamp anyway)
